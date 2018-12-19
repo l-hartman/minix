@@ -26,6 +26,7 @@
 #include <minix/drivers.h>
 #include <minix/driver.h>
 #include <termios.h>
+#include <ctype.h>
 #include <sys/kbdio.h>
 #include <sys/ttycom.h>
 #include <sys/ttydefaults.h>
@@ -65,6 +66,7 @@ static void in_transfer(tty_t *tp);
 static int tty_echo(tty_t *tp, int ch);
 static void rawecho(tty_t *tp, int ch);
 static int back_over(tty_t *tp);
+static int delete_word(tty_t *tp); // addition
 static void reprint(tty_t *tp);
 static void dev_ioctl(tty_t *tp);
 static void setattr(tty_t *tp);
@@ -109,6 +111,7 @@ static struct termios termios_defaults = {
 	[VEOF] = CEOF,
 	[VEOL] = CEOL,
 	[VERASE] = CERASE,
+	[VWERASE] = CWERASE, // addition
 	[VINTR] = CINTR,
 	[VKILL] = CKILL,
 	[VMIN] = CMIN,
@@ -1075,7 +1078,15 @@ int count;			/* number of input characters */
 			}
 			continue;
 		}
-
+		// addition
+		/* Erase pocessing (rub out of last word). */
+		if (ch == tp->tty_termios.c_cc[VWERASE]) {
+			(void) delete_word(tp);
+			if (!(tp->tty_termios.c_lflag & ECHOE)) {
+				(void) tty_echo(tp, ch);
+			}
+			continue;
+		}
 		/* Kill processing (remove current line). */
 		if (ch == tp->tty_termios.c_cc[VKILL]) {
 			while (back_over(tp)) {}
@@ -1086,6 +1097,7 @@ int count;			/* number of input characters */
 			}
 			continue;
 		}
+
 
 		/* EOF (^D) means end-of-file, an invisible "line break". */
 		if (ch == tp->tty_termios.c_cc[VEOF]) ch |= IN_EOT | IN_EOF;
@@ -1274,6 +1286,41 @@ register tty_t *tp;
   return(1);				/* one character erased */
 }
 
+// addition
+/*===========================================================================*
+ *				delete_word				     *
+ *===========================================================================*/
+static int delete_word(tp)
+register tty_t *tp;
+{
+/* Delete previously typed word. */
+  unsigned short *head;
+  unsigned short next;
+  unsigned char curr_ch;
+  int len;
+  int finished = 0;
+  while(finished == 0) {
+  	if (tp->tty_incount == 0) return(0);	/* queue empty */
+    head = tp->tty_inhead;
+    if (head == tp->tty_inbuf) head = bufend(tp->tty_inbuf);
+    head--;
+	next = *head; // grab the next piece of data in buffer
+	curr_ch = next & IN_CHAR; // IN_CHAR = 0x00FF, the low 8 bits are the character
+	if (isalnum(curr_ch) || curr_ch == ' ') {
+        (void) back_over(tp);
+		if (curr_ch == ' ') {
+      		finished = 1;
+		}
+    } 
+	else {
+      finished = 1;
+    }
+  }
+  return(1);
+}
+ 
+
+
 /*===========================================================================*
  *				reprint					     *
  *===========================================================================*/
@@ -1285,7 +1332,6 @@ register tty_t *tp;		/* pointer to tty struct */
  */
   int count;
   u16_t *head;
-
   tp->tty_reprint = FALSE;
 
   /* Find the last line break in the input. */
